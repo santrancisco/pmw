@@ -14,6 +14,7 @@ import (
 	"time"
     "os/signal"
 	"syscall"
+	"sort"
 )
 
 var ColorReset = "\033[0m" 
@@ -104,14 +105,86 @@ func resolveTag(owner, repo, sha string) (string, error) {
 	return tagResponse.Object.Sha, nil
 }
 
+
+func compareVersions(v1, v2 string) int {
+    parts1 := strings.Split(v1, ".")
+    parts2 := strings.Split(v2, ".")
+    maxLen := len(parts1)
+    if len(parts2) > maxLen {
+        maxLen = len(parts2)
+    }
+    for i := 0; i < maxLen; i++ {
+        var num1, num2 int
+        if i < len(parts1) {
+            fmt.Sscanf(parts1[i], "%d", &num1)
+        }
+        if i < len(parts2) {
+            fmt.Sscanf(parts2[i], "%d", &num2)
+        }
+        if num1 > num2 {
+            return 1
+        } else if num1 < num2 {
+            return -1
+        }
+    }
+    return 0
+}
+
+// Turn out when user put in v2, github workflow will find the latest version that has prefix "v2".. .so it could be v2.x.x, v2.x
+// As such we will need to go through all tags and compare the versions.
+func findLatestVersionTag(owner, repo, prefix string) (string, error) {
+    url := fmt.Sprintf("https://api.github.com/repos/%s/%s/tags", owner, repo)
+    resp, err := http.Get(url)
+    if err != nil {
+        return "", err
+    }
+    defer resp.Body.Close()
+    if resp.StatusCode != 200 {
+        return "", fmt.Errorf("GitHub API returned status: %d", resp.StatusCode)
+    }
+    var tags []struct {
+        Name   string `json:"name"`
+        Commit struct {
+            Sha string `json:"sha"`
+        } `json:"commit"`
+    }
+    if err := json.NewDecoder(resp.Body).Decode(&tags); err != nil {
+        return "", err
+    }
+    var filtered []string
+    for _, t := range tags {
+        if strings.HasPrefix(t.Name, prefix) {
+            filtered = append(filtered, t.Name)
+        }
+    }
+    if len(filtered) == 0 {
+        return "", fmt.Errorf("no tags found with prefix %s", prefix)
+    }
+    // Sort filtered tags in descending order (latest first) using semantic version comparison.
+    sort.Slice(filtered, func(i, j int) bool {
+        v1 := strings.TrimPrefix(filtered[i], "v")
+        v2 := strings.TrimPrefix(filtered[j], "v")
+        return compareVersions(v1, v2) > 0
+    })
+    latestTag := filtered[0]
+    for _, t := range tags {
+        if t.Name == latestTag {
+            return t.Commit.Sha, nil
+        }
+    }
+    return "", fmt.Errorf("could not resolve latest tag for prefix %s", prefix)
+}
+
 // Getting commit sha for version tags, iterate through nested tag if neccessary
 // for workflow pin to master, we just get the hash of master branch
 func getCommitSha(owner, repo, tag string) (string, error) {
 	var orginUrl string
 	if tag == "master" {
 		orginUrl = fmt.Sprintf("https://api.github.com/repos/%s/%s/git/ref/heads/master", owner, repo)
-	} else {
-		orginUrl = fmt.Sprintf("https://api.github.com/repos/%s/%s/git/ref/tags/%s", owner, repo, tag)
+	} else if tag == "main" {
+		orginUrl = fmt.Sprintf("https://api.github.com/repos/%s/%s/git/ref/heads/main", owner, repo)
+	}  else {
+		return findLatestVersionTag(owner, repo, tag)
 	}
 	resp, err := http.Get(orginUrl)
 	if err != nil {
@@ -121,48 +194,11 @@ func getCommitSha(owner, repo, tag string) (string, error) {
 	if resp.StatusCode != 200 {
 		return "", fmt.Errorf("GitHub API returned status: %d", resp.StatusCode)
 	}
-	var ref GitRefResponse
-	if err := json.NewDecoder(resp.Body).Decode(&ref); err != nil {
+	var tagResponse GitTagResponse
+	if err := json.NewDecoder(resp.Body).Decode(&tagResponse); err != nil {
 		return "", err
 	}
-
-	commitSha := ref.Object.Sha
-	weirdMapping := false
-
-	// If the type is "tag", go deeper
-	for ref.Object.Type == "tag" {
-		weirdMapping = true
-		resolvedSha, err := resolveTag(owner, repo, commitSha)
-		if err != nil {
-			return "", err
-		}
-		commitSha = resolvedSha
-
-		// Check if the resolved object is still a tag.
-		url := fmt.Sprintf("https://api.github.com/repos/%s/%s/git/tags/%s", owner, repo, commitSha)
-		resp2, err := http.Get(url)
-		if err != nil {
-			return "", err
-		}
-		defer resp2.Body.Close()
-		if resp2.StatusCode != 200 {
-			break
-		}
-		var tagResp GitTagResponse
-		if err := json.NewDecoder(resp2.Body).Decode(&tagResp); err != nil {
-			return "", err
-		}
-		// If still a tag, update and continue the loop.
-		if tagResp.Object.Type == "tag" {
-			ref.Object.Type = tagResp.Object.Type
-		} else {
-			break
-		}
-	}
-	if weirdMapping {
-		fmt.Printf(ColorMagenta+"Note: Nested tag mapping encountered for %s/%s@%s, resolved to commit %s\nYou can check nested mapping at:%s\n"+ColorReset, owner, repo, tag, commitSha, orginUrl)
-	}
-	return commitSha, nil
+	return tagResponse.Object.Sha, nil
 }
 
 // isAllowedOrg returns true if the given owner is in the allowed organizations list.
