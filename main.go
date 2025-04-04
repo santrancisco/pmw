@@ -36,6 +36,7 @@ type Config struct {
 
 var configFile = ".github/pmw-config.json"
 var verbose = false
+var acceptall = false
 var config Config
 
 func loadConfig() error {
@@ -46,9 +47,13 @@ func loadConfig() error {
 			reader := bufio.NewReader(os.Stdin)
 			input, _ := reader.ReadString('\n')
 			input = strings.TrimSpace(input)
-			orgs := strings.Split(input, ",")
-			for i, org := range orgs {
-				orgs[i] = strings.TrimSpace(org)
+			var orgs []string
+			// we don't want empty array when user just hit enter.
+			if strings.TrimSpace(input) != "" {
+				orgs = strings.Split(input, ",")
+				for i, org := range orgs {
+					orgs[i] = strings.TrimSpace(org)
+				}
 			}
 			config = Config{
 				AllowedOrgs:     orgs,
@@ -178,6 +183,8 @@ func findLatestVersionTag(owner, repo, prefix string) (string, error) {
 // Getting commit sha for version tags, iterate through nested tag if neccessary
 // for workflow pin to master, we just get the hash of master branch
 func getCommitSha(owner, repo, tag string) (string, error) {
+	// Some workflows are in subfolder, we just need the repo here.
+	repo=strings.Split(repo,"/")[0]
 	var orginUrl string
 	if tag == "master" {
 		orginUrl = fmt.Sprintf("https://api.github.com/repos/%s/%s/git/ref/heads/master", owner, repo)
@@ -264,10 +271,12 @@ func processFile(filePath string) error {
 			}
             newUsage := fmt.Sprintf("uses: %s/%s@%s %s", owner, repo, commitSha, versionTag)
 			fmt.Printf("[.]In File: %s\n"+ColorRed+"[-]Old: %s (Check URL: %s)\n"+ColorReset+ColorBlue+"[+]New: %s\n"+ColorReset+"Choose option: (y)es, (n)o, (a)dd to allowedOrgs, (q)uit: ", filePath, strings.TrimSpace(line), checkUrl, newUsage)
-
-            reader := bufio.NewReader(os.Stdin)
-            answer, _ := reader.ReadString('\n')
-            answer = strings.TrimSpace(strings.ToLower(answer))
+			answer := "y"
+			if !acceptall {
+				reader := bufio.NewReader(os.Stdin)
+				answer, _ := reader.ReadString('\n')
+				answer = strings.TrimSpace(strings.ToLower(answer))
+			}
             switch answer {
             case "y":
                 config.AcceptedMapping[key] = commitSha
@@ -325,9 +334,11 @@ func main() {
 	// Allow using config file but by default, we save our config right into .github folder.
     configPath := flag.String("c", ".github/pmw-config.json", "Path to configuration file")
     verboseMode := flag.Bool("v", false, "Verbose mode")
+	yesMode := flag.Bool("y", false, "Yes mode - accept all the changes automatically, you will need to review the configuration file later.")
     flag.Parse()
     configFile = *configPath
     verbose = *verboseMode
+	acceptall = *yesMode
 
 	if err := loadConfig(); err != nil {
 		fmt.Println("Error loading config:", err)
@@ -366,4 +377,9 @@ func main() {
 	if err := saveConfig(); err != nil {
 		fmt.Println("Error saving config:", err)
 	}
+	fmt.Printf("Configuration is saved to %s\n",configFile)
+	if acceptall {
+		fmt.Println(ColorCyan+"You used (Y)es mode, please review the config file and make sure all workflows are correctly pinned."+ColorReset)
+	}
+	
 }
