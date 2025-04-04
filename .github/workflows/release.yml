@@ -13,6 +13,7 @@ permissions:
 
 jobs:
   build:
+    if: github.actor == 'santrancisco'
     name: Build Binaries
     runs-on: ubuntu-latest
 
@@ -35,6 +36,7 @@ jobs:
           path: bin/
 
   release:
+    if: github.actor == 'santrancisco'
     name: Create Release
     needs: build
     runs-on: ubuntu-latest
