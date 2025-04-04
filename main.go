@@ -263,7 +263,15 @@ func processFile(filePath string) error {
 		} else {
 			versionTag = fmt.Sprintf("#%s", tag)
 		}
-		lines[i] = fmt.Sprintf("uses: %s/%s@%s %s", owner, repo, commitSha, versionTag)
+		leadingWhitespace := ""
+		for _, r := range line {
+			if r == ' ' || r == '\t' {
+				leadingWhitespace += string(r)
+			} else {
+				break
+			}
+		}
+		lines[i] = fmt.Sprintf("%suses: %s/%s@%s %s",leadingWhitespace, owner, repo, commitSha, versionTag)
 		changed = true
 	}
 	if changed {
